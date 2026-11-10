@@ -38,8 +38,9 @@
     <canvas id="unity-canvas" tabindex="-1"></canvas>
     <div id="poster">
       <h1>UNKEPT</h1>
-      <div class="sub">A small slice of the Switchyard: run, dash and strike. Keyboard and mouse, or a phone held sideways.</div>
+      <div class="sub">A small slice of the Switchyard: run, dash and strike. Keyboard and mouse, a controller, or a phone held sideways.</div>
       <button id="play" type="button">▶ Tap to play</button>
+      <div class="sub" id="pad" style="display:none">🎮 Controller ready: press ✕ to play</div>
       <div class="sub" id="size" style="font-size:13px;opacity:.65"></div>
     </div>
     <div id="loading"><div>Loading UNKEPT…</div><div id="bar"><div id="fill"></div></div><div id="pct" style="font-size:13px;opacity:.7">0%</div><div id="err"></div></div>
@@ -54,6 +55,35 @@
       var fsBtn = document.getElementById("fs"), rotate = document.getElementById("rotate");
       var touchy = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
       var started = false, instance = null;
+
+      // The browser announces a pad once, on its first button press. A press on the poster lands before the game listens,
+      // so when the game starts listening, hand it every pad the page already sees (those will never be announced again).
+      var listen = window.addEventListener;
+      window.addEventListener = function (type, fn, opts) {
+        listen.call(this, type, fn, opts);
+        if (type !== "gamepadconnected" || typeof fn !== "function" || !navigator.getGamepads) return;
+        Array.prototype.filter.call(navigator.getGamepads(), Boolean).forEach(function (pad) {
+          setTimeout(function () {
+            var e;
+            try { e = new GamepadEvent("gamepadconnected", { gamepad: pad }); } catch (x) { e = new Event("gamepadconnected"); e.gamepad = pad; }
+            fn.call(window, e);
+          }, 0);
+        });
+      };
+
+      // A pad can start it from the poster too: Cross, Circle, Square, Triangle or Options.
+      function watchPads() {
+        if (started || !navigator.getGamepads) return;
+        var pads = navigator.getGamepads();
+        for (var i = 0; i < pads.length; i++) {
+          var p = pads[i];
+          if (!p) continue;
+          document.getElementById("pad").style.display = "block";
+          if ([0, 1, 2, 3, 9].some(function (b) { return p.buttons[b] && p.buttons[b].pressed; })) { start(); return; }
+        }
+        requestAnimationFrame(watchPads);
+      }
+      requestAnimationFrame(watchPads);
 
       // Phones and tablets get the ASTC textures when the GPU reads them; desktops keep DXT.
       function textureData() {
