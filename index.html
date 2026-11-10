@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>UNKEPT — browser demo</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; background: #0d0b10; color: #f3ede2; overflow: hidden;
+      font: 600 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; touch-action: none; -webkit-user-select: none; user-select: none; }
+    #stage { position: fixed; inset: 0; }
+    #unity-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #0d0b10; outline: none; }
+    #poster { position: absolute; inset: 0; background: #0d0b10 url("poster.webp") center / cover no-repeat;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+    #poster::before { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(13,11,16,.15), rgba(13,11,16,.75)); }
+    #poster > * { position: relative; }
+    h1 { margin: 0; font-size: clamp(28px, 7vmin, 64px); letter-spacing: .18em; text-shadow: 0 3px 0 #000; }
+    .sub { opacity: .85; font-weight: 500; text-align: center; max-width: 34em; padding: 0 16px; }
+    button { font: inherit; cursor: pointer; border: 0; }
+    #play { font-size: clamp(18px, 4vmin, 28px); padding: .75em 1.8em; border-radius: 999px; background: #f3ede2; color: #0d0b10;
+      box-shadow: 0 6px 0 #000, 0 0 0 4px rgba(243,237,226,.25); }
+    #play:active { transform: translateY(3px); box-shadow: 0 3px 0 #000; }
+    #loading { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+      background: rgba(13,11,16,.82); }
+    #bar { width: min(60vw, 420px); height: 10px; border-radius: 6px; background: rgba(255,255,255,.15); overflow: hidden; }
+    #fill { width: 0; height: 100%; background: #f3ede2; transition: width .15s; }
+    #fs { position: absolute; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); display: none;
+      width: 42px; height: 42px; border-radius: 10px; background: rgba(0,0,0,.45); color: #fff; font-size: 22px; line-height: 42px; z-index: 5; }
+    #rotate { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+      background: #0d0b10; z-index: 10; text-align: center; padding: 24px; }
+    #rotate .phone { width: 46px; height: 78px; border: 4px solid #f3ede2; border-radius: 9px; animation: turn 1.6s ease-in-out infinite; }
+    @keyframes turn { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+    #err { color: #ff9b9b; max-width: 34em; text-align: center; display: none; padding: 0 16px; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="unity-canvas" tabindex="-1"></canvas>
+    <div id="poster">
+      <h1>UNKEPT</h1>
+      <div class="sub">A small slice of the Switchyard: run, dash and strike. Keyboard and mouse, or a phone held sideways.</div>
+      <button id="play" type="button">▶ Tap to play</button>
+      <div class="sub" id="size" style="font-size:13px;opacity:.65"></div>
+    </div>
+    <div id="loading"><div>Loading UNKEPT…</div><div id="bar"><div id="fill"></div></div><div id="pct" style="font-size:13px;opacity:.7">0%</div><div id="err"></div></div>
+    <button id="fs" type="button" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+    <div id="rotate"><div class="phone"></div><div>Turn your phone sideways to play.</div></div>
+  </div>
+  <script>
+    (function () {
+      var canvas = document.getElementById("unity-canvas");
+      var poster = document.getElementById("poster"), loading = document.getElementById("loading");
+      var fill = document.getElementById("fill"), pct = document.getElementById("pct"), err = document.getElementById("err");
+      var fsBtn = document.getElementById("fs"), rotate = document.getElementById("rotate");
+      var touchy = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+      var started = false, instance = null;
+
+      // Phones and tablets get the ASTC textures when the GPU reads them; desktops keep DXT.
+      function textureData() {
+        var forced = new URLSearchParams(location.search).get("tex");   // ?tex=astc or ?tex=dxt, for testing either file
+        if (forced === "astc") return "Build/WebGL-astc.data.unityweb";
+        if (forced === "dxt") return "Build/WebGL.data.unityweb";
+        try {
+          var gl = document.createElement("canvas").getContext("webgl2");
+          if (gl && gl.getExtension("WEBGL_compressed_texture_astc") && !gl.getExtension("WEBGL_compressed_texture_s3tc")) return "Build/WebGL-astc.data.unityweb";
+        } catch (e) {}
+        return "Build/WebGL.data.unityweb";
+      }
+
+      function portrait() { return touchy && window.innerHeight > window.innerWidth; }
+      function layout() { rotate.style.display = portrait() ? "flex" : "none"; }
+      addEventListener("resize", layout); addEventListener("orientationchange", layout); layout();
+
+      function fullscreen() {
+        var el = document.getElementById("stage");
+        var req = el.requestFullscreen || el.webkitRequestFullscreen;
+        if (!req) return Promise.resolve();
+        return Promise.resolve(req.call(el)).then(function () {
+          if (screen.orientation && screen.orientation.lock) return screen.orientation.lock("landscape").catch(function () {});
+        }).catch(function () {});
+      }
+      fsBtn.addEventListener("click", function () {
+        if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+        else fullscreen();
+      });
+
+      function start() {
+        if (started) return; started = true;
+        if (touchy) fullscreen();   // a phone wants the whole glass; the click is the gesture the browser needs
+        poster.style.display = "none"; loading.style.display = "flex";
+        var script = document.createElement("script");
+        script.src = "Build/WebGL.loader.js";
+        script.onload = function () {
+          createUnityInstance(canvas, {
+            dataUrl: textureData(),
+            frameworkUrl: "Build/WebGL.framework.js.unityweb",
+            codeUrl: "Build/WebGL.wasm.unityweb",
+            streamingAssetsUrl: "StreamingAssets",
+            companyName: "DefaultCompany",
+            productName: "UNKEPT",
+            productVersion: "1.0",
+            matchWebGLToCanvasSize: true,
+            devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+          }, function (p) {
+            var v = Math.round(p * 100); fill.style.width = v + "%"; pct.textContent = v + "%";
+          }).then(function (u) {
+            instance = u; window.unkept = u;
+            loading.style.display = "none"; fsBtn.style.display = "block";
+            window.unkeptLoadedMs = Math.round(performance.now() - window.unkeptStartMs);
+            console.log("[UNKEPT web] loaded in " + window.unkeptLoadedMs + " ms");
+            canvas.focus();
+          }).catch(function (e) {
+            err.style.display = "block"; err.textContent = "Couldn't start: " + e;
+          });
+        };
+        script.onerror = function () { err.style.display = "block"; err.textContent = "Couldn't load the game files."; };
+        window.unkeptStartMs = performance.now();
+        document.body.appendChild(script);
+      }
+      document.getElementById("play").addEventListener("click", start);
+      canvas.addEventListener("pointerdown", function () { canvas.focus(); });
+    })();
+  </script>
+</body>
+</html>
